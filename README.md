@@ -1,20 +1,31 @@
 [![CI for specs](https://github.com/WebAssembly/gc/actions/workflows/ci-spec.yml/badge.svg)](https://github.com/WebAssembly/gc/actions/workflows/ci-spec.yml)
 [![CI for interpreter & tests](https://github.com/WebAssembly/gc/actions/workflows/ci-interpreter.yml/badge.svg)](https://github.com/WebAssembly/gc/actions/workflows/ci-interpreter.yml)
 
-# GC Proposal for WebAssembly
+# Simple Transactions Proposal for WebAssembly
 
-This repository is a clone of [github.com/WebAssembly/spec/](https://github.com/WebAssembly/spec/).
-It is meant for discussion, prototype specification and implementation of a proposal to add garbage collection (GC) support to WebAssembly.
+This repository is a clone of [github.com/WebAssembly/gc/](https://github.com/WebAssembly/gc/).
+It is meant for discussion, prototype specification and implementation of a
+proposal to add simple transaction support to WebAssembly.  It builds on the
+GC proposal as a baseline and includes all respective changes.  It also builds
+on the multi-memory proposal and assumes the possibility of the threads
+proposal (but does not directly use it).
 
-* See the [overview](proposals/gc/Overview.md) for a high-level summary and rationale of the proposal. *Note:* the concrete details here are out of date.
+* See the [overview](proposals/simple-transactions/Overview.md) for a high-level summary and
+ rationale of the proposal.
+ <!-- *Note:* the concrete details here are out of date. -->
 
-* See the [MVP](proposals/gc/MVP.md) for an up-to-date overview of the concrete language extensions that are proposed for the first stage of GC support in Wasm.
+<!-- * See the [MVP](proposals/gc/MVP.md) for an up-to-date overview of the -->
+<!-- concrete language extensions that are proposed for the first stage of GC -->
+<!-- support in Wasm. -->
 
-* See the [Post-MVP](proposals/gc/Post-MVP.md) for possible future extensions in later stages. 
+<!-- * See the [Post-MVP](proposals/gc/Post-MVP.md) for possible future extensions in later stages. -->
 
-* See the [modified spec](https://webassembly.github.io/gc/core) for the completed spec for the first-stage proposal described in MVP.md.
+<!-- * See the [modified spec](https://webassembly.github.io/gc/core) for the -->
+<!-- completed spec for the first-stage proposal described in MVP.md. -->
 
-This repository is based on the [function references proposal](proposals/function-references/Overview.md) as a baseline and includes all respective changes.
+<!-- This repository is based on the [function references -->
+<!-- proposal](proposals/function-references/Overview.md) as a baseline and -->
+<!-- includes all respective changes. -->
 
 Original `README` from upstream repository follows...
 
