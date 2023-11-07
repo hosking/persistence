@@ -2,8 +2,11 @@
 
 See [overview](Overview.md) for background.
 
-The functionality provided with this first version of simple transactions support for Wasm is intentionally limited in the spirit of a "a minimal viable product" (MVP).
-As a rough guideline, it includes only essential functionality and avoids features that may provide better performance in some cases.
+The functionality provided with this first version of simple transactions
+support for Wasm is intentionally limited in the spirit of a "a minimal viable
+product" (MVP).  As a rough guideline, it includes only essential
+functionality and avoids features that may provide better performance in some
+cases.
 
 In particular, this MVP proposal does not include nested transaction support
 (closed or open) but only "flat" nesting.  It is, however, anticipated that a
@@ -34,592 +37,380 @@ Anticipates and interoperates with:
 * [threads](https://github.com/WebAssembly/threads), which introduces support
   for threads and memory atomics
 
-### Stopped editing here (EBM)
-
 ### Types
 
-#### Heap Types
+#### Transactional Heap Types
 
-[Heap types](https://github.com/WebAssembly/function-references/blob/master/proposals/function-references/Overview.md#types) classify reference types and are extended. There now are 3 disjoint hierarchies of heap types:
+The design approach for simple transactions keeps transactional and
+non-transactional data separate.  The intent is that transactional data be
+manipulated only transactionally (within and by transactions).  Thus the
+extension offers a transactional heap distinct from the existing
+non-transactional heap.  For reasons of both clear semantics and better
+performance, the distinc heaps use distinct types.  The extension also uses
+distinct transactional and non-transactional memories, which have distinct
+memory types.
 
-1. _Internal_ (values in Wasm representation)
-2. _External_ (values in a host-specific representation)
-3. _Functions_
+The transactional heap types form a separate hierarchy analogous to the
+existing hierarchy:
 
-Heap types `extern` and `func` already exist via [reference types proposal](https://github.com/WebAssembly/reference-types), and `(ref null? $t)` via [typed references](https://github.com/WebAssembly/function-references); `extern` and `func` are the common supertypes (a.k.a. top) of all external and function types, respectively.
+* `tany` is a new transactional type
+  - `transtype ::= ... | tany
+  - the common supertype (a.k.a. top) of all transactional types
 
-The following additions are made to the hierarchies of heap types:
+* `tnofunc` is a new transactional type
+  - `transtype ::= ... | tnofunc`
+  - the common subtype (a.k.a. bottom) of all transactional function types
 
-* `any` is a new heap type
-  - `heaptype ::= ... | any`
-  - the common supertype (a.k.a. top) of all internal types
+* `tnone` is a new transactional type
+  - `transtype ::= ... | tnone`
+  - the common subtype (a.k.a. bottom) of all transactional heap types
 
-* `none` is a new heap type
-  - `heaptype ::= ... | none`
-  - the common subtype (a.k.a. bottom) of all internal types
+* `teq` is a new transactional type
+  - `transtype ::= ... | teq`
+  - the common supertype of all transactional types on which comparison
+    (`tref.eq`) is allowed
 
-* `noextern` is a new heap type
-  - `heaptype ::= ... | noextern`
-  - the common subtype (a.k.a. bottom) of all external types
+* `tfunc` is a new transactional type
+  - `transtype ::= ... | tfunc`
+  - the common supertype of all `tfunc` types
 
-* `nofunc` is a new heap type
-  - `heaptype ::= ... | nofunc`
-  - the common subtype (a.k.a. bottom) of all function types
+* `tstruct` is a new transactional type
+  - `transtype ::= ... | tstruct`
+  - the common supertype of all `tstruct` types
 
-* `eq` is a new heap type
-  - `heaptype ::= ... | eq`
-  - the common supertype of all referenceable types on which comparison (`ref.eq`) is allowed (this may include host-defined external types)
+* `tarray` is a new transactional type
+  - `transtype ::= ... | tarray`
+  - the common supertype of all `tarray` types
 
-* `struct` is a new heap type
-  - `heaptype ::= ... | struct`
-  - the common supertype of all struct types
+* `ti31` is a new transactional type
+  - `transtype ::= ... | ti31`
+  - the type of transactional unboxed scalars
 
-* `array` is a new heap type
-  - `heaptype ::= ... | array`
-  - the common supertype of all array types
+* TODO consider whether `textern` types would make sense
 
-* `i31` is a new heap type
-  - `heaptype ::= ... | i31`
-  - the type of unboxed scalars
+We distinguish these *abstract* transactional types from *concrete*
+transactional types `$t` that reference actual definitions in the type
+section.  Most abstract transactional types are a supertype of a class of
+concrete transactional types.  Moreover, they form several small [subtype
+hierarchies](#subtyping) among themselves.
 
-We distinguish these *abstract* heap types from *concrete* heap types `$t` that reference actual definitions in the type section.
-Most abstract heap types are a supertype of a class of concrete heap types.
-Moreover, they form several small [subtype hierarchies](#subtyping) among themselves.
+#### Transactional Reference Types
 
+Transactional reference types are based on `tref`, which is analogous to the
+non-transactional `ref` types.  However, `tref` types include, in addition to
+the optional `null` and a (super)type, a *permission*, which can be `none`,
+'read`, or `write`.  The `none` may be omitted.
 
-#### Reference Types
+* `<treftype> ::= tref <permission> null? <transtype>`
 
-New abbreviations are introduced for reference types in binary and text format, corresponding to `funcref` and `externref`:
+* `<permission> ::= none? | read | write`
+  - We may wish to allow abbreviations such as `n`, `r`, and `w`.
 
-* `anyref` is a new reference type
-  - `anyref == (ref null any)`
+The `tref` types have abbreviations similar to those of reference types in
+binary and text format:
 
-* `nullref` is a new reference type
-  - `nullref == (ref null none)`
+* `tanyref` is a new transactional reference type
+  - `tanyref == (tref none null tany)`
 
-* `nullexternref` is a new reference type
-  - `nullexternref == (ref null noextern)`
+* `tnullref` is a new transactional reference type
+  - `tnullref == (tref none null tnone)`
 
-* `nullfuncref` is a new reference type
-  - `nullfuncref == (ref null nofunc)`
+* `tnullfuncref` is a new transactional reference type
+  - `tnullfuncref == (tfuncref none null tnofunc)`
 
-* `eqref` is a new reference type
-  - `eqref == (ref null eq)`
+* `teqref` is a new transactional reference type
+  - `eqref == (tref none null teq)`
 
-* `structref` is a new reference type
-  - `structref == (ref null struct)`
+* `tfuncref` is a new transactional reference type
+  - `tfuncref == (tref none null tfunc)`
 
-* `arrayref` is a new reference type
-  - `arrayref == (ref null array)`
+* `tstructref` is a new transactional reference type
+  - `tstructref == (tref none null tstruct)`
 
-* `i31ref` is a new reference type
-  - `i31ref == (ref null i31)`
+* `tarrayref` is a new transactional reference type
+  - `tarrayref == (tref none null tarray)`
 
+* `ti31ref` is a new transactional reference type
+  - `ti31ref == (tref none null ti31)`
 
-#### Type Definitions
+#### Transactional Permission Subtyping
 
-* `deftype` is the syntax for an entry in the type section, generalising the existing syntax
-  - `deftype ::= rec <subtype>*`
-  - `module ::= {..., types vec(<deftype>)}`
-  - a `rec` definition defines a group of mutually recursive types that can refer to each other; it thereby defines several type indices at a time
-  - a single type definition, as in Wasm before this proposal, is reinterpreted as a short-hand for a recursive group containing just one type
-  - Note that the number of type section entries is now the number of recursion groups rather than the number of individual types.
+For each appropriate type `t`, `tref read null t` is a subtype of `tref none
+    null t`, and `tref read t` is  subtype of `tref none t`.  Furthermore,
+    `tref write null t` is a subtype of `tref read null t` and `tref write t`
+    is a subtype of `tref read t`.  Thus a `tref` with more restrictive
+    permissions may be used where a `tref` with less restrictive permissions
+    is required, `write` being more restrictive than `read` and `read` being
+    more restrictive than `none`.  Note that permissions have no meaning for
+    `tfuncref` types since the content of functions cannot be read or written.
 
-* `subtype` is a new category of type defining a single type, as a subtype of possible other types
-  - `subtype ::= sub final? <typeidx>* <comptype>`
-  - the preexisting syntax with no `sub` clause is redefined to be a shorthand for a `sub` clause with empty `typeidx` list: `<comptype> == sub final () <comptype>`
-  - Note: This allows multiple supertypes. For the MVP, it is restricted to at most one supertype.
+#### Transactional Type Definitions
 
-* `comptype` is a new category of types covering the different forms of *composite* types
-  - `comptype ::= <functype> | <structtype> | <arraytype>`
+* `sub` for defining subtypes applies to transactional types and defines new
+  transactional types.
 
-* `structtype` describes a structure with statically indexed fields
-  - `structtype ::= struct <fieldtype>*`
+* `tcomptype` is a new category of types covering the different forms of
+  *composite* transactional types
+  - `tcomptype ::= <tfunctype> | <tstructtype> | <tarraytype>`
 
-* `arraytype` describes an array with dynamically indexed fields
-  - `arraytype ::= array <fieldtype>`
+* `tfunctype` describes a function that can be invoked transactionally
+  - `tfunctype ::= tfunc <tvaltype1>* -> <tvaltype2>*`
 
-* `fieldtype` describes a struct or array field and whether it is mutable
-  - `fieldtype ::= <mutability> <storagetype>`
-  - `storagetype ::= <valtype> | <packedtype>`
+* `tstructtype` describes a transactional structure with statically indexed fields
+  - `tstructtype ::= tstruct <tfieldtype>*`
+
+* `tarraytype` describes a transactional array with dynamically indexed fields
+  - `tarraytype ::= tarray <tfieldtype>`
+
+* `tfieldtype` describes a `tstruct` or `tarray` field and whether it is mutable
+  - `tfieldtype ::= <mutability> <storagetype>`
+  - `storagetype ::= <tvaltype> | <packedtype>`
   - `packedtype ::= i8 | i16`
 
-TODO: Need to be able to use `i31` as a type definition.
+* `<tvaltype> ::= <numtype> | <treftype>
 
+TODO: Need to be able to use `ti31` as a type definition.
 
-#### Type Contexts
+##### Transactional Heap Types
 
-Validity of a module is checked under a context storing the definitions for each type. In the case of recursive types, this definition is given by a respective projection from the full type:
-```
-ctxtype ::= <deftype>.<i>
-```
+The following are added for transactional heap types:
 
-Both `C.types` and `C.funcs` in typing contexts `C` as defined by the spec now carry `ctxtype`s as opposed to `functype`s like before.
-In the case of `C.funcs`, it is an invariant that all types [expand](#auxiliary-definitions) to a function type.
+* every transactional type is a subtype of `tany`
+  - `t <: tany`
+    - if `t = tany/teq/tfunc/tstruct/tarray/ti31` or `t = $t` and `$t =
+      <tfunctype>` or `$t = <tstructtype>` or `$t = <tarraytype>`
 
+* every transactional type is a supertype of `tnone`
+  - `tnone <: t`
+    - if `t <: tany` (IS THIS RIGHT?)
 
-#### Auxiliary Definitions
+* every transactional function type is a subtype of `tfunc`
+  - `t <: tfunc`
+    - if `t = tfunc` or `t = $t` and `$t = <tfunctype>`
 
-* Unpacking a storage type yields `i32` for packed types, otherwise the type itself
-  - `unpacked(t) = t`
-  - `unpacked(pt) = i32`
+* every transactional function type is a supertype of `tnofunc`
+  - `tnofunc <: t`
+    - if `t <: tfunc`
 
-* Unrolling a possibly recursive context type projects the respective item
-  - `unroll($t)                 = unroll(<ctxtype>)`  iff `$t = <ctxtype>`
-  - `unroll((rec <subtype>*).i) = (<subtype>*)[i]`
-
-* Expanding a type definition unrolls it and returns its plain definition
-  - `expand($t)                 = expand(<ctxtype>)`  iff `$t = <ctxtype>`
-  - `expand(<ctxtype>)          = <comptype>`
-    - where `unroll(<ctxttype>) = sub final? x* <comptype>`
-
-* Finality of a type just checks the flag
-  - `final($t)                  = final(<ctxtype>)`  iff `$t = <ctxtype>`
-  - `final(<ctxtype>)           = final? =/= empty`
-    - where `unroll(<ctxttype>) = sub final? x* <comptype>`
-
-
-#### External Types
-
-Unlike in the current spec, external function types need to be represented by a type index/address, in order to preserve the structure and equivalence of iso-recursive types:
-```
-externtype ::= func <typeidx> | ...
-```
-The type is then looked up and expanded as needed. (This was `func <functype>` before.)
-
-
-#### Type Validity
-
-Some of the rules define a type as `ok` for a certain index, written `ok(x)`. This controls uses of type indices as supertypes inside a recursive group: the subtype hierarchy must not be cyclic, and hence any type index used for a supertype is required to be smaller than the index `x` of the current type.
-
-* a sequence of type definitions is valid if each item is valid within the context containing the prior items
-  - `<deftype0> <deftype>* ok`
-    - iff `<deftype0> ok` and extends the context accordingly
-    - and `<deftype>* ok` under the extended context
-
-* a group of recursive type definitions is valid if its types are valid under the context containing all of them
-  - `rec <subtype>* ok` and extends the context with `<ctxtype>*`
-    - iff `<subtype>* ok($t)` under the extended context(!)
-    - where `$t` is the next unused (i.e., current) type index
-    - and `N = |<subtype>*|-1`
-    - and `<ctxtype>*  = (rec <subtype>*).0, ..., (rec <subtype>*).N`
-
-* a sequence of subtype's is valid if each of them is valid for their respective index
-  - `<subtype0> <subtype>* ok($t)`
-    - iff `<subtype0> ok($t)`
-    - and `<subtype>* ok($t+1)`
-
-* an individual subtype is valid if its definition is valid, matches every supertype, and no supertype is final or has an index higher than its own
-  - `sub final? $t* <comptype> ok($t')`
-    - iff `<comptype> ok`
-    - and `(<comptype> <: expand($t))*`
-    - and `(not final($t))*`
-    - and `($t < $t')*`
-  - Note: the upper bound on the supertype indices ensures that subtyping hierarchies are never circular, because definitions need to be ordered.
-
-* as [before](https://github.com/WebAssembly/function-references/proposals/function-references/Overview.md#types), a comptype is valid if all the occurring value types are valid
-  - specifically, a concrete reference type `(ref $t)` is valid when `$t` is defined in the context
-
-Example: Consider two mutually recursive types:
-```
-(rec
-  (type $t1 (struct (field i32 (ref $t2))))
-  (type $t2 (struct (field i64 (ref $t1))))
-)
-```
-In the context, these will be recorded as:
-```
-$t1 = rect1t2.0
-$t2 = rect1t2.1
-
-where
-
-rect1t2 = (rec
-  (struct (field i32 (ref $t2)))
-  (struct (field i64 (ref $t1)))
-)
-```
-That is, the types are defined as projections from their respective recursion group, using their relative inner indices `0` and `1`.
-
-
-#### Equivalence
-
-Type equivalence, written `t == t'` here, is essentially defined inductively. All rules are simply the canonical congruences, with the exception of the rule for recursive types.
-
-For the purpose of defining recursive type equivalence, type indices are extended with a special form that distinguishes regular from recursive type uses.
-
-* `rec.<i>` is a new form of type index
-  - `typeidx ::= ... | rec.<i>`
-
-This form is only used during equivalence checking, to identify and represent "back edges" inside a recursive type. It is merely a technical device for formulating the rules and cannot appear in source code. It is introduced by the following auxiliary meta-function:
-
-* Rolling a context type produces an _iso-recursive_ representation of its underlying recursion group
-  - `tie($t)                    = tie_$t(<ctxtype>)`  iff `$t = <ctxtype>`
-  - `tie_$t((rec <subtype>*).i) = (rec <subtype>*).i[$t':=rec.0, ..., $t'+N:=rec.N]` iff `$t' = $t-i` and `N = |<subtype>*|-1`
-  - Note: This definition assumes that all projections of the recursive type are bound to consecutive type indices, so that `$t-i` is the first of them.
-  - Note: If a type is not recursive, `tie` is just the identity.
-
-With that:
-
-* two regular type indices are equivalent if they define equivalent tied context types:
-  - `$t == $t'`
-    - iff `tie($t) == tie($t')`
-
-* two recursive type indices are equivalent if they project the same index
-  - `rec.i == rec.i'`
-    - iff `i = i'`
-
-* two recursive types are equivalent if they are equivalent pointwise
-  - `(rec <subtype>*) == (rec <subtype'>*)`
-    - iff `(<subtype> == <subtype'>)*`
-  - Note: This rule is only used on types that have been tied, which prevents looping.
-
-* notably, two subtypes are equivalent if their structure is equivalent, they have equivalent supertypes, and their finality flag matches
-  - `(sub final1? $t* <comptype>) == (sub final2? $t'* <comptype'>)`
-    - iff `<comptype> == <comptype'>`
-    - and `($t == $t')*`
-    - and `final1? = final2?`
-
-Example: As explained above, the mutually recursive types
-```
-(rec
-  (type $t1 (struct (field i32 (ref $t2))))
-  (type $t2 (struct (field i64 (ref $t1))))
-)
-```
-would be recorded in the context as
-```
-$t1 = (rec (struct (field i32 (ref $t2))) (struct (field i64 (ref $t1)))).0
-$t2 = (rec (struct (field i32 (ref $t2))) (struct (field i64 (ref $t1)))).1
-```
-Consequently, if there was an equivalent pair of types,
-```
-(rec
-  (type $u1 (struct (field i32 (ref $u2))))
-  (type $u2 (struct (field i64 (ref $u1))))
-)
-```
-recorded in the context as
-```
-$u1 = (rec (struct (field i32 (ref $u2))) (struct (field i64 (ref $u1)))).0
-$u2 = (rec (struct (field i32 (ref $u2))) (struct (field i64 (ref $u1)))).1
-```
-then to check the equivalence `$t1 == $u1`, both types are tied into iso-recursive types first:
-```
-tie($t1) = (rec (struct (field i32 (ref rec.1))) (struct (field i64 (ref rec.0)))).0
-tie($u1) = (rec (struct (field i32 (ref rec.1))) (struct (field i64 (ref rec.0)))).0
-```
-In this case, it is immediately apparent that these are equivalent types.
-
-Note: In type-theoretic terms, these are higher-kinded iso-recursive types:
-```
-tie($t1) ~ (mu a. <(struct (field i32 (ref a.1))), (struct i64 (field (ref a.0)))>).0
-tie($t2) ~ (mu a. <(struct (field i32 (ref a.1))), (struct i64 (field (ref a.0)))>).1
-```
-where `<...>` denotes a type tuple. However, in our case, a single syntactic type variable `rec` is enough for all types, because recursive types cannot nest by construction.
-
-Note 2: This semantics implies that type equivalence checks can be implemented in constant-time by representing all types as trees in tied form and canonicalising them bottom-up in linear time upfront.
-
-Note 3: It's worth noting that the only observable difference to the rules for a nominal type system is the equivalence rule on (non-recursive) type indices: instead of comparing the definitions of their recursive groups, a nominal system would require `$t = $t'` syntactically (at least as long as we ignore things like checking imports, where type indices become meaningless).
-Consequently, using a single big recursion group in this system makes it behave like a nominal system.
-
-
-#### Subtyping
-
-##### Type Indices
-
-In the [existing rules](https://github.com/WebAssembly/function-references/proposals/function-references/Overview.md#subtyping), subtyping on type indices required equivalence. Now it can take declared supertypes into account.
-
-* Type indices are subtypes if they either define [equivalent](#type-equivalence) types or a suitable (direct or indirect) subtype relation has been declared
-  - `$t <: $t'`
-    - if `$t = <ctxtype>` and `$t' = <ctxtype'>` and `<ctxtype> == <ctxtype'>`
-    - or `unroll($t) = sub final? $t1* $t'' $t2* comptype` and `$t'' <: $t'`
-  - Note: This rule climbs the supertype hierarchy until an equivalent type has been found. Effectively, this means that subtyping is "nominal" modulo type canonicalisation.
-
-
-##### Heap Types
-
-In addition to the [existing rules](https://github.com/WebAssembly/function-references/proposals/function-references/Overview.md#subtyping) for heap types, the following are added:
-
-* every internal type is a subtype of `any`
-  - `t <: any`
-    - if `t = any/eq/struct/array/i31` or `t = $t` and `$t = <structtype>` or `$t = <arraytype>`
-
-* every internal type is a supertype of `none`
-  - `none <: t`
-    - if `t <: any`
-
-* every external type is a subtype of `extern`
-  - `t <: extern`
-    - if `t = extern`
-  - note: there may be other subtypes of `extern` in the future
-
-* every external type is a supertype of `noextern`
-  - `noextern <: t`
-    - if `t <: extern`
-
-* every function type is a subtype of `func`
-  - `t <: func`
-    - if `t = func` or `t = $t` and `$t = <functype>`
-
-* every function type is a supertype of `nofunc`
-  - `nofunc <: t`
-    - if `t <: func`
-
-* `structref` is a subtype of `eqref`
-  - `struct <: eq`
+* `tstructref` is a subtype of `teqref`
+  - `tstruct <: teq`
   - TODO: provide a way to make aggregate types non-eq, especially immutable ones?
 
-* `arrayref` is a subtype of `eqref`
-  - `array <: eq`
+* `tarrayref` is a subtype of `teqref`
+  - `tarray <: teq`
 
-* `i31ref` is a subtype of `eqref`
-  - `i31 <: eq`
+* `ti31ref` is a subtype of `teqref`
+  - `ti31 <: teq`
 
-* Any concrete struct type is a subtype of `struct`
-  - `$t <: struct`
-     - if `$t = <structtype>`
+* Any concrete tstruct type is a subtype of `tstruct`
+  - `$t <: tstruct`
+     - if `$t = <tstructtype>`
 
-* Any concrete array type is a subtype of `array`
-  - `$t <: array`
-     - if `$t = <arraytype>`
+* Any concrete tarray type is a subtype of `tarray`
+  - `$t <: tarray`
+     - if `$t = <tarraytype>`
 
-* Any concrete function type is a subtype of `func`
-  - `$t <: func`
-     - if `$t = <functype>`
-
-Note: This creates a hierarchy of *abstract* Wasm heap types that looks as follows.
+Note: This creates a hierarchy of *abstract* Wasm transactioanl heap types that looks as follows.
 ```
-      any  extern  func
-       |
-       eq
-    /  |   \
-i31  struct  array
+      tany
+        |
+       teq
+    /   |    \
+ti31 tstruct tarray
 ```
-The hierarchy consists of several disjoint sub hierarchies, each starting from one of the *top* heap types `any`, `extern`, or `func`.
+All *concrete* transactional types (of the form `$t`) are situated below
+either `tstruct` or `tarray`.
+Not shown in the graph is `tnone`, which is below the other "leaf" types.
 
-All *concrete* types (of the form `$t`) are situated below either `struct`, `array`, or `func`.
-Not shown in the graph are `none`, `noextern`, and `nofunc`, which are below the other "leaf" types.
+TODO: Consider whether a host environment may introduce additional inhabitants of type `tany`
+that are are in none of the above leaf type categories.
 
-A host environment may introduce additional inhabitants of type `any`
-that are are in neither of the above leaf type categories.
-The interpretation of such values is defined by the host environment, they are opaque within Wasm code.
-
-Note: In the future, this hierarchy could be refined, e.g., to distinguish aggregate types that are not subtypes of `eq`.
+Note: In the future, this hierarchy could be refined, e.g., to distinguish
+aggregate types that are not subtypes of `teq`.
 
 
 ##### Composite Types
 
 The subtyping rules for composite types are only invoked during validation of a `sub` [type definition](#type-definitions).
 
-* Function types are covariant on their results and contravariant on their parameters
-  - `func <valtype11>* -> <valtype12>* <: func <valtype21>* -> <valtype22>*`
+* Transactional function types are covariant on their results and
+  contravariant on their parameters:
+  - `tfunc <valtype11>* -> <valtype12>* <: tfunc <valtype21>* -> <valtyoe22>*`
     - iff `(<valtype21> <: <valtype11>)*`
-    - and `(<valtype12> <: <valtype22>)*`
+    - and `(<valtype12> <: (<valtype22>)*`
 
-* Structure types support width and depth subtyping
-  - `struct <fieldtype1>* <fieldtype1'>* <: struct <fieldtype2>*`
+* Transactional structure types support width and depth subtyping
+  - `tstruct <fieldtype1>* <fieldtype1'>* <: tstruct <fieldtype2>*`
     - iff `(<fieldtype1> <: <fieldtype2>)*`
 
-* Array types support depth subtyping
-  - `array <fieldtype1> <: array <fieldtype2>`
+* Transactional array types support depth subtyping
+  - `tarray <fieldtype1> <: tarray <fieldtype2>`
     - iff `<fieldtype1> <: <fieldtype2>`
 
-* Field types are covariant if they are immutable, invariant otherwise
+* Transactional field types are covariant if they are immutable, invariant otherwise
   - `const <storagetype1> <: const <storagetype2>`
     - iff `<storagetype1> <: <storagetype2>`
   - `var <storagetype> <: var <storagetype>`
   - Note: mutable fields are *not* subtypes of immutable ones, so `const` really means constant, not read-only
 
-* Storage types inherent subtyping from value types, packed types must be equivalent
+* Transactional storage types inherent subtyping from transactional value types; packed types must be equivalent
   - `<packedtype> <: <packedtype>`
-
-
-##### Type Definitions
-
-Subtyping is not defined on type definitions.
-
 
 ### Runtime
 
 #### Runtime Types
 
-* Runtime types (RTTs) are values representing concrete types at runtime. In the MVP, *canonical* RTTs are implicitly created by all instructions depending on runtime type information. In future versions, RTTs may become explicit values, and non-canonical versions of these instructions will be introduced.
-
-* An RTT value r1 is *equal* to another RTT value r2 iff they both represent the same static type.
-
-* An RTT value r1 is a *subtype* of another RTT value r2 iff they represent static types that are in a respective subtype relation.
-
-Note: RTT values correspond to type descriptors or "shape" objects as they exist in various engines.
-RTT equality can be implemented as a single pointer test by memoising RTT values.
-More interestingly, runtime casts along the hierarchy encoded in these values can be implemented in an engine efficiently
-by using well-known techniques such as including a vector of its (direct and indirect) super-RTTs in each RTT value (with itself as the last entry).
-A subtype check between two RTT values can be implemented as follows using such a representation.
-Assume RTT value v1 represents static type `$t1` and v2 type `$t2`.
-Let `n1` and `n2` be the lengths of the respective supertype vectors.
-To check whether v1 denotes a subtype RTT of v2, first verify that `n1 >= n2` --
-if both `n1` and `n2` are known statically, this can be performed at compile time;
-if either is not statically known (`$t1` and `n1` are typically unknown during a cast),
-it has to be read from the respective RTT value dynamically, and `n1 >= n2` becomes a dynamic check.
-Then compare v2 to the n2-th entry in v1's supertype vector.
-If they are equal, v1 is a subtype RTT.
-In the case of actual casts, the static type of RTT v1 (obtained from the value to cast) is not known at compile time, so `n1` is dynamic as well.
-(Note that `$t1` and `$t2` are not relevant for the dynamic semantics,
-but merely for validation.)
-
-Note: This assumes that there is at most one supertype. For hierarchies with multiple supertypes, more complex tests would be necessary.
-
-Example: Consider three types and corresponding RTTs:
-```
-(type $A (sub (struct)))
-(type $B (sub $A (struct (field i32))))
-(type $C (sub $B (struct (field i32 i64))))
-```
-Assume the respective RTTs for types `$A`, `$B`, and `$C` are called `$rttA`, `$rttB`, and `$rttC`.
-Then, `$rttA` would carry supertype vector `[$rttA]`, `$rttB` has `[$rttA, $rttB]`, and `$rttC` has `[$rttA, $rttB, $rttC]`.
-
-Now consider a function that casts a `$B` to a `$C`:
-```
-(func $castBtoC (param $x (ref $B)) (result (ref $C))
-  (ref.cast $C (local.get $x))
-)
-```
-This can compile to machine code that (1) reads the RTT from `$x`, (2) checks that the length of its supertype table is >= 3, and (3) pointer-compares table[2] against `$rttC`.
-
+* Runtime types (RTTs) for transactional types do not add any new
+  considerations, only some new types.
 
 #### Values
 
-* Reference values of aggregate or function type have an associated runtime type:
-  - for structures or arrays, it is the RTT value implictly produced upon creation,
-  - for functions, it is the RTT value for the function's type (which may be recursive).
-
+* Reference values of aggregate transactional type have an associated runtime type,
+  nmely the RTT value implictly produced upon creation.
 
 ### Instructions
 
-Note: Instructions not mentioned here remain the same.
-In particular, `ref.null` is typed as before, despite the introduction of `none`/`nofunc`/`noextern`.
-
+Note: Instructions not mentioned here remain the same.  Also, the instructions
+defined here could overload the corresponding non-transactional instructions
+since transactional and non-transactional types are distinct.  We preferred
+not to require a further case analysis on types when executing these instructions.
 
 #### Equality
 
-* `ref.eq` compares two references whose types support equality
-  - `ref.eq : [eqref eqref] -> [i32]`
+* `tref.eq` compares two references whose types support equality
+  - `tref.eq : [teqref teqref] -> [i32]`
 
 
 #### Structures
 
-* `struct.new <typeidx>` allocates a structure with canonical [RTT](#values) and initialises its fields with given values
-  - `struct.new $t : [t'*] -> [(ref $t)]`
-    - iff `expand($t) = struct (mut t'')*`
+* `tstruct.new <typeidx>` allocates a structure with canonical [RTT](#values) and initialises its fields with given values
+  - `tstruct.new $t : [t'*] -> [(tref write $t)]`
+    - iff `expand($t) = tstruct (mut t'')*`
     - and `(t' = unpacked(t''))*`
   - this is a *constant instruction*
+  - adds all fields of the new `tstruct` to the transaction's write set
 
-* `struct.new_default <typeidx>` allocates a structure of type `$t` with canonical [RTT](#values) and initialises its fields with default values
-  - `struct.new_default $t : [] -> [(ref $t)]`
-    - iff `expand($t) = struct (mut t')*`
+* `tstruct.new_default <typeidx>` allocates a structure of type `$t` with canonical [RTT](#values) and initialises its fields with default values
+  - `tstruct.new_default $t : [] -> [(tref write $t)]`
+    - iff `expand($t) = tstruct (mut t')*`
     - and all `t'*` are defaultable
   - this is a *constant instruction*
+  - adds all fields of the new `tstruct` to the transaction's write set
 
-* `struct.get_<sx>? <typeidx> <fieldidx>` reads field `i` from a structure
-  - `struct.get_<sx>? $t i : [(ref null $t)] -> [t]`
-    - iff `expand($t) = struct (mut1 t1)^i (mut ti) (mut2 t2)*`
+* `tstruct.get_<sx>? <typeidx> <fieldidx>` reads field `i` from a structure
+  - `tstruct.get_<sx>? $t i : [(tref read null $t)] -> [t]`
+    - iff `expand($t) = tstruct (mut1 t1)^i (mut ti) (mut2 t2)*`
     - and `t = unpacked(ti)`
     - and `_<sx>` present iff `t =/= ti`
   - traps on `null`
+  - adds at least the accessed field to the transaction's read set
 
-* `struct.set <typeidx> <fieldidx>` writes field `i` of a structure
-  - `struct.set $t i : [(ref null $t) ti] -> []`
-    - iff `expand($t) = struct (mut1 t1)^i (var ti) (mut2 t2)*`
+* `tstruct.set <typeidx> <fieldidx>` writes field `i` of a structure
+  - `tstruct.set $t i : [(tref write null $t) ti] -> []`
+    - iff `expand($t) = tstruct (mut1 t1)^i (var ti) (mut2 t2)*`
     - and `t = unpacked(ti)`
   - traps on `null`
+  - adds at least the accessed field to the transaction's write set
 
 
 #### Arrays
 
-* `array.new <typeidx>` allocates an array with canonical [RTT](#values)
-  - `array.new $t : [t' i32] -> [(ref $t)]`
-    - iff `expand($t) = array (mut t'')`
+* `tarray.new <typeidx>` allocates an array with canonical [RTT](#values)
+  - `tarray.new $t : [t' i32] -> [(tref write $t)]`
+    - iff `expand($t) = tarray (mut t'')`
     - and `t' = unpacked(t'')`
   - this is a *constant instruction*
+  - adds all fields of the new `tarray` to the transaction's write set
 
-* `array.new_default <typeidx>` allocates an array with canonical [RTT](#values) and initialises its fields with the default value
-  - `array.new_default $t : [i32] -> [(ref $t)]`
-    - iff `expand($t) = array (mut t')`
+* `tarray.new_default <typeidx>` allocates an array with canonical [RTT](#values) and initialises its fields with the default value
+  - `tarray.new_default $t : [i32] -> [(tref write $t)]`
+    - iff `expand($t) = tarray (mut t')`
     - and `t'` is defaultable
   - this is a *constant instruction*
+  - adds all fields of the new `tarray` to the transaction's write set
 
 * `array.new_fixed <typeidx> <N>` allocates an array with canonical [RTT](#values) of fixed size and initialises it from operands
-  - `array.new_fixed $t N : [t^N] -> [(ref $t)]`
-    - iff `expand($t) = array (mut t'')`
+  - `tarray.new_fixed $t N : [t^N] -> [(tref write $t)]`
+    - iff `expand($t) = tarray (mut t'')`
     - and `t' = unpacked(t'')`
   - this is a *constant instruction*
+  - adds all fields of the new `tarray` to the transaction's write set
 
-* `array.new_data <typeidx> <dataidx>` allocates an array with canonical [RTT](#values) and initialises it from a data segment
-  - `array.new_data $t $d : [i32 i32] -> [(ref $t)]`
-    - iff `expand($t) = array (mut t')`
+* `tarray.new_data <typeidx> <dataidx>` allocates an array with canonical [RTT](#values) and initialises it from a data segment
+  - `tarray.new_data $t $d : [i32 i32] -> [(tref write $t)]`
+    - iff `expand($t) = tarray (mut t')`
     - and `t'` is numeric, vector, or packed
     - and `$d` is a defined data segment
   - the 1st operand is the `offset` into the segment
   - the 2nd operand is the `size` of the array
   - traps if `offset + |t'|*size > len($d)`
   - note: for now, this is _not_ a constant instruction, in order to side-step issues of recursion between binary sections; this restriction will be lifted later
+  - adds all fields of the new `tarray` to the transaction's write set
 
-* `array.new_elem <typeidx> <elemidx>` allocates an array with canonical [RTT](#values) and initialises it from an element segment
-  - `array.new_elem $t $e : [i32 i32] -> [(ref $t)]`
-    - iff `expand($t) = array (mut t')`
+* `tarray.new_elem <typeidx> <elemidx>` allocates an array with canonical [RTT](#values) and initialises it from an element segment
+  - `tarray.new_elem $t $e : [i32 i32] -> [(tref write $t)]`
+    - iff `expand($t) = tarray (mut t')`
     - and `$e : rt`
     - and `rt <: t'`
   - the 1st operand is the `offset` into the segment
   - the 2nd operand is the `size` of the array
   - traps if `offset + size > len($e)`
   - note: for now, this is _not_ a constant instruction, in order to side-step issues of recursion between binary sections; this restriction will be lifted later
+  - adds all fields of the new `tarray` to the transaction's write set
 
-* `array.get_<sx>? <typeidx>` reads an element from an array
-  - `array.get_<sx>? $t : [(ref null $t) i32] -> [t]`
-    - iff `expand($t) = array (mut t')`
+* `tarray.get_<sx>? <typeidx>` reads an element from an array
+  - `tarray.get_<sx>? $t : [(tref read null $t) i32] -> [t]`
+    - iff `expand($t) = tarray (mut t')`
     - and `t = unpacked(t')`
     - and `_<sx>` present iff `t =/= t'`
   - traps on `null` or if the dynamic index is out of bounds
+  - adds at least the accessed field to the transaction's read set
+  - adds at least the `tarray`'s length to the transaction's read set
 
-* `array.set <typeidx>` writes an element to an array
-  - `array.set $t : [(ref null $t) i32 t] -> []`
-    - iff `expand($t) = array (var t')`
+* `tarray.set <typeidx>` writes an element to an array
+  - `tarray.set $t : [(tref write null $t) i32 t] -> []`
+    - iff `expand($t) = tarray (var t')`
     - and `t = unpacked(t')`
   - traps on `null` or if the dynamic index is out of bounds
+  - adds at least the accessed field to the transaction's write set
+  - adds at least the `tarray`'s length to the transaction's read set
 
-* `array.len` inquires the length of an array
-  - `array.len : [(ref null array)] -> [i32]`
+* `tarray.len` inquires the length of an array
+  - `tarray.len : [(tref read null array)] -> [i32]`
   - traps on `null`
+  - adds at least the `tarray`'s length to the transaction's read set
 
-* `array.fill <typeidx>` fills a slice of an array with a given value
-  - `array.fill $t : [(ref null $t) i32 t i32] -> []`
-    - iff `expand($t) = array (mut t')`
+(EBM stopped here; needs work around array length and checking consistency of
+tfunc with func)
+
+* `tarray.fill <typeidx>` fills a slice of an array with a given value
+  - `tarray.fill $t : [(tref write null $t) i32 t i32] -> []`
+    - iff `expand($t) = tarray (mut t')`
     - and `t = unpacked(t')`
   - the 1st operand is the `array` to fill
   - the 2nd operand is the `offset` into the array at which to begin filling
   - the 3rd operand is the `value` with which to fill
   - the 4th operand is the `size` of the filled slice
   - traps if `array` is null or `offset + size > len(array)`
+  - may result in a transaction conflict
 
-* `array.copy <typeidx> <typeidx>` copies a sequence of elements between two arrays
-  - `array.copy $t1 $t2 : [(ref null $t1) i32 (ref null $t2) i32 i32] -> []`
-    - iff `expand($t1) = array (mut t1)`
-    - and `expand($t2) = array (mut? t2)`
-    - and `t2 <: t1`
-  - the 1st operand is the `dest` array that will be copied to
-  - the 2nd operand is the `dest_offset` at which the copy will begin in `dest`
-  - the 3rd operand is the `src` array that will be copied from
-  - the 4th operand is the `src_offset` at which the copy will begin in `src`
-  - the 5th operand is the `size` of the copy
-  - traps if `dest` is null or `src` is null
-  - traps if `dest_offset + size > len(dest)` or `src_offset + size > len(src)`
-  - note: `dest` and `src` may be the same array and the source and destination
-    regions may overlap. This must be handled correctly just like it is for
-    `memory.copy`.
+* `tarray.copy <typeidx> <typeidx>` copies a sequence of elements between two arrays
+  - `tarray.copy $t1 $t2 : [(tref write null $t1) i32 (ref null $t2) i32 i32] -> []`
+    - defined similarly to `array.copy` with a transactional target and
+      non-transactional source
+    - may result in a transaction conflict
+  - `tarray.copyt $t1 $t2 : [(tref write null $t1) i32 (tref read null $t2) i32 i32] -> []`
+    - defined similarly to `array.copy` with a transactional target and
+      transactional source
+    - may result in a transaction conflict
+  - `array.copyt $t1 $t2 : [(ref null $t1) i32 (tref read null $t2) i32 i32] -> []`
+    - defined similarly to `array.copy` with a non-transactional target and
+      transactional source
+    - may result in a transaction conflict
 
-* `array.init_elem <typeidx> <elemidx>` copies a sequence of elements from an element segment to an array
-  - `array.init_elem $t $e : [(ref null $t) i32 i32 i32] -> []`
-    - iff `expand($t) = array (mut t)`
+* `tarray.init_elem <typeidx> <elemidx>` copies a sequence of elements from an element segment to an array
+  - `tarray.init_elem $t $e : [(tref write null $t) i32 i32 i32] -> []`
+    - iff `expand($t) = tarray (mut t)`
     - and `$e : rt`
     - and `rt <: t`
   - the 1st operand is the `array` to be initialized
@@ -629,8 +420,8 @@ In particular, `ref.null` is typed as before, despite the introduction of `none`
   - traps if `array` is null
   - traps if `dest_offset + size > len(array)` or `src_offset + size > len($e)`
 
-* `array.init_data <typeidx> <dataidx>` copies a sequence of values from a data segment to an array
-  - `array.init_data $t $d : [(ref null $t) i32 i32 i32] -> []`
+* `tarray.init_data <typeidx> <dataidx>` copies a sequence of values from a data segment to an array
+  - `tarray.init_data $t $d : [(tref write null $t) i32 i32 i32] -> []`
     - iff `expand($t) = array (mut t)`
     - and `t` is numeric, vector, or packed
     - and `$d` is a defined data segment
