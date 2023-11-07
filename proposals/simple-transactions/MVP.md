@@ -1,4 +1,4 @@
-# GC v1 Extensions
+# Simple Transactions v1 Extensions
 
 See [overview](Overview.md) for background.
 
@@ -528,14 +528,14 @@ Casts work for both abstract and concrete types. In the latter case, they test i
   - `tref.cast_read : [tref perm rt] -> [tref read rt]`
   - may add one or more fields of the referenced transactional object to the
     transaction's read set
-  - traps if the transactional reference is null
+  - traps if the transactional reference is null [OR: does not complain?]
 
 * `tref.cast_write <treftype>` tries to convert a tranactional reference's
   permissions to include `write` within the current transaction
-  - `tref.cast_read : [tref perm rt] -> [tref read rt]`
+  - `tref.cast_write : [tref perm rt] -> [tref write rt]`
   - may add one or more fields of the referenced transactional object to the
     transaction's write set
-  - traps if the transactional reference is null
+  - traps if the transactional reference is null [OR: does not complain?]
 
 * `tbr_on_cast <labelidx> <treftype> <treftype>` branches if a transactional reference has a given type
   - `tbr_on_cast $l rt1 rt2 : [t0* rt1] -> [t0* rt1\rt2]`
@@ -568,17 +568,117 @@ where:
 
 * finally, `tref.as_non_null` is equivalent to `tref.cast ht`, where `ht` is the heap type of the operand
 
-(EBM stopped here)
+#### Globals
+
+To modules are added `tglobal` variable definitions, analogous to `global`
+variables.  Note that a `const` `tglobal` is equivalent to the `const`
+`global` since it cannot be changed after initialisation, transactionally or
+not.
+
+* `tglobal.get <gidx>` gets the value of a transactional global variable
+  - `tglobal.get <gidx> : [] -> [$t]` where `$t` is the type of the variable
+  - unless the global is `const`, adds it to the transaction's read set
+
+* `tglobal.set <gidx>` sets the value of a transactional global variable
+  - `tglobal.set <gidx> : [$t] -> []` where `$t` is the type of the variable
+  - lgeal only of the variable is mutable
+  - adds the variable to the transaction's write set
+
+#### Tables
+
+To modules are added `ttable` and `telem` definitions, analogous to `table`
+and `elem` definitions.  A `ttable` will contain `tref` values.  The
+instructions behave analogously to their non-transactional versions.  The read
+and write set effects are listed with each instruction.
+
+* `ttable.get <tidx>`
+  - At least the fetched index is added to the transaction's read set.
+
+* `ttable.set <tidx>`
+  - At least the modified index is added to the transaction's write set.
+
+* `ttable.size <tidx>`
+  - The size of the `ttable` is added to the transaction's read set.
+
+* `ttable.grow <tidx>`
+  - At least the newly added indices are added to the transaction's write set.
+  - The size of the `ttable` is added to the transaction's write set.
+
+* `ttable.fill <tidx>`
+  - At least the modified indices are added to the transaction's write set.
+
+* `ttable.copy <tidx1> <tidx2>`
+  - At least the fetched indices are added to the transaction's read set.
+  - At least the modified indices are added to the transaction's write set.
+
+* `ttable.init <tidx> <elemidx>`
+  - At least the indicated element index is added to the transaction's read set.
+  - At least the modified indices are added to the transaction's write set.
+
+* `telem.drop <elemidx>`
+  - At least the indicated element index is added to the transaction's write set.
+
+#### Memories
+
+To modules are added `tmemory` and `tdata` definitions, analogous to `memory`
+and `data` definitions.  The instructions behave analogously to their
+non-transactional versions.  The read and write set effects are described
+below.
+
+* Memory `load` instructions
+  - Adds at least the accessed address range to the transaction's read set.
+
+* Memory `store` instructions
+  - Adds at least the updated address range to the transaction's write set.
+
+* `tmemory.size`
+  - The size of the `tmemory` is added to the transaction's read set.
+
+* `tmemory.grow`
+  - At least the newly added addresses are added to the transaction's write set.
+  - The size of the `tmemory` is added to the transaction's write set.
+
+* `tmemory.fill`
+  - At least the modified addresses are added to the transaction's write set.
+
+* `tmemory.copy <tidx1> <tidx2>`
+  - At least the transactionally fetched addresses are added to the transaction's read set.
+  - At least the transactionally written addresses are added to the transaction's write set.
+
+* `tmemory.init`
+  - At least the initialised addresses are added to the transaction's write set.
+  - At least the accessed data index is added to the transaction's read set.
+
+* `tdata.drop`
+  - At least the indicated data index is added to the transaction's write set.
+
+#### Control Instructions
+
+A new transactional block instruction is added, as well as an instruction to
+caue a transaction to fail explicitly.
+
+* *instr* ::= ... | `tblock` *blocktype* *instr1\** `failure` *instr2\** `end`
+  - Analogous to `block` this executes *instr1\** transactionally.  On
+    failure, if the `tblock` is not itself executed within a transaction, the
+    `failure` instructions `*instr2\**` are executed after effects of the
+    transaction have been undone.  Thus they are not executed "in" the
+    transaction.
+  - The failure instructions are started with no values given on the stack,
+    but must produce a result that matches the *blocktype* result (or branch
+    to some outer control structure).
+
+* *instr* ::= ... | `tfail`
+  - Causes the current transaction to fail.  **TODO:** consider whether to
+    allow a tag or an integer value to be conveyed.
 
 #### Constant Expressions
 
 In order to allow RTTs to be initialised as globals, the following extensions are made to the definition of *constant expressions*:
 
-* `ref.i31` is a constant instruction
-* `struct.new` and `struct.new_default` are constant instructions
-* `array.new`, `array.new_default`, and `array.new_fixed` are constant instructions
-  - Note: `array.new_data` and `array.new_elem` are not for the time being, see above
-* `any.convert_extern` and `extern.convert_any` are constant instructions
+* `tref.i31` is a constant instruction
+* `tstruct.new` and `tstruct.new_default` are constant instructions
+* `tarray.new`, `tarray.new_default`, and `tarray.new_fixed` are constant instructions
+  - Note: `tarray.new_data` and `tarray.new_elem` are not for the time being, see above
 * `global.get` is a constant instruction and can access preceding (immutable) global definitions, not just imports as in the MVP
 
 
