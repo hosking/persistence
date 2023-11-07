@@ -718,8 +718,6 @@ The opcode for heap types is encoded as an `s33`.
 
 | Opcode | Type            | Parameters | Note |
 | ------ | --------------- | ---------- | ---- |
-| i >= 0 | `(type i)`      |            | from funcref proposal |
-
 | -0x17  | `tnone`         |            | |
 | -0x18  | `tany`          |            | |
 | -0x19  | `teq`           |            | |
