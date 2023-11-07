@@ -27,7 +27,10 @@ Based on the following proposals:
 
 * [typed function references](https://github.com/WebAssembly/function-references), which introduces typed references `(ref null? $t)` etc.
 
-All three proposals are prerequisites.
+* [exceptions](https://github/com/WebAssembly/exceptions), which introduces an
+  exception handling mechanism
+
+All four proposals are prerequisites.
 
 Anticipates and interoperates with:
 
@@ -275,6 +278,57 @@ defined here could overload the corresponding non-transactional instructions
 since transactional and non-transactional types are distinct.  We preferred
 not to require a further case analysis on types when executing these instructions.
 
+#### Transactions and Conflict Detection
+
+When transactions may execute concurrently, the system needs to protect
+against non-serializable executions.  To define serializability, each
+transactional instruction definition indicates which items (fields of
+`tstruct` and `tarray` objects in the transactional heap, indices into
+transactional tables, byte ranges of transactional memories, and transactional
+global variables) must be included in a transaction's read and write sets as a
+result of executing the instruction.  Execution *may* add more items to a read
+or write set to simplify conflict detection and reduce the amount of
+information needed for it.  For example, rather than tracking individual
+fields of a `tstruct`, an implementation may consider the whole `tstruct` to
+be accessed.  In the case of a `tarray`, it may consider the whole `tarray` to
+have been accessed, or make break it into granules that are tracked
+separately.  Likewise transaction tables and memories may be tracked on a
+granule basis.  Global variables are more likely tracked individually, but the
+spec does not require that.
+
+A thread is *running a transaction* if the thread's execution is within a
+`tblock` or `tfunc`, and the transaction is also said to be *running*.  If two
+running transaction's read and write sets are such that the write set of one
+has a non-empty intersection with the read or write set of the other, that are
+said to *conflict*.  When two transactions conflict, at least one of them must
+*fail*.  The spec does not indicate when this will happen.  The intent is to
+allow implementations that validate read sets before committing, rather than
+requiring read locks.  The intent is also to allow timestamp based concurrency
+control.  It is also the intent of the spec to allow conflict avoidance or
+conflict detection.  A formalisation will simply guarantee that successful
+transactions not involve a cycle of dependence on values read and written.
+
+Transactional tail calls are considered part of the original transaction.
+
+#### Transaction Atomicity
+
+If a transaction succeeds then its effects become visible.  If a transaction
+fails, its effects are discarded.  Furthermore, it is the intent of conflict
+detection that no successful transaction observe an effect of an unsuccessful
+one.
+
+#### Transactions and Exceptions
+
+The simple transactions model provides for exception that cause the
+transaction to fail and ones that allow it to succeed.  An exception that
+causes failure may not convey any value other than its tag (i.e., which
+exception it is).  Thus a failing exception might possibly be implemented
+using failure of a hardware transactional memory transaction.
+
+An exception that allows a transaction to succeed may convey any legal values
+and from the standpoint of the transaction mechanism is no different from
+successfully exiting ` tblock` or returning from a `tfunc`.
+
 #### Equality
 
 * `tref.eq` compares two references whose types support equality
@@ -365,7 +419,6 @@ not to require a further case analysis on types when executing these instruction
     - and `_<sx>` present iff `t =/= t'`
   - traps on `null` or if the dynamic index is out of bounds
   - adds at least the accessed field to the transaction's read set
-  - adds at least the `tarray`'s length to the transaction's read set
 
 * `tarray.set <typeidx>` writes an element to an array
   - `tarray.set $t : [(tref write null $t) i32 t] -> []`
@@ -373,15 +426,12 @@ not to require a further case analysis on types when executing these instruction
     - and `t = unpacked(t')`
   - traps on `null` or if the dynamic index is out of bounds
   - adds at least the accessed field to the transaction's write set
-  - adds at least the `tarray`'s length to the transaction's read set
 
 * `tarray.len` inquires the length of an array
   - `tarray.len : [(tref read null array)] -> [i32]`
   - traps on `null`
-  - adds at least the `tarray`'s length to the transaction's read set
-
-(EBM stopped here; needs work around array length and checking consistency of
-tfunc with func)
+  - Note: since the length of a given `tarray` never changes (i.e., it is a
+    constant), it is never part of the read or write set of a transaction.
 
 * `tarray.fill <typeidx>` fills a slice of an array with a given value
   - `tarray.fill $t : [(tref write null $t) i32 t i32] -> []`
@@ -392,23 +442,24 @@ tfunc with func)
   - the 3rd operand is the `value` with which to fill
   - the 4th operand is the `size` of the filled slice
   - traps if `array` is null or `offset + size > len(array)`
-  - may result in a transaction conflict
+  - adds at least the written fields to the transaction's write set
 
 * `tarray.copy <typeidx> <typeidx>` copies a sequence of elements between two arrays
   - `tarray.copy $t1 $t2 : [(tref write null $t1) i32 (ref null $t2) i32 i32] -> []`
     - defined similarly to `array.copy` with a transactional target and
       non-transactional source
-    - may result in a transaction conflict
+    - adds at least the written fields to the transaction's write set
   - `tarray.copyt $t1 $t2 : [(tref write null $t1) i32 (tref read null $t2) i32 i32] -> []`
     - defined similarly to `array.copy` with a transactional target and
       transactional source
-    - may result in a transaction conflict
+    - adds at least the written fields to the transaction's write set
+    - adds at least the read fields to the transaction's read set
   - `array.copyt $t1 $t2 : [(ref null $t1) i32 (tref read null $t2) i32 i32] -> []`
     - defined similarly to `array.copy` with a non-transactional target and
       transactional source
-    - may result in a transaction conflict
+    - adds at least the read fields to the transaction's read set
 
-* `tarray.init_elem <typeidx> <elemidx>` copies a sequence of elements from an element segment to an array
+* `tarray.init_elem <typeidx> <elemidx>` copies a sequence of elements from an element segment to a `tarray`
   - `tarray.init_elem $t $e : [(tref write null $t) i32 i32 i32] -> []`
     - iff `expand($t) = tarray (mut t)`
     - and `$e : rt`
@@ -419,6 +470,7 @@ tfunc with func)
   - the 4th operand is the `size` of the copy
   - traps if `array` is null
   - traps if `dest_offset + size > len(array)` or `src_offset + size > len($e)`
+  - adds at least the written fields to the transaction's write set
 
 * `tarray.init_data <typeidx> <dataidx>` copies a sequence of values from a data segment to an array
   - `tarray.init_data $t $d : [(tref write null $t) i32 i32 i32] -> []`
@@ -433,77 +485,90 @@ tfunc with func)
     type, the source is interpreted as packed in the same way.
   - traps if `array` is null
   - traps if `dest_offset + size > len(array)` or `src_offset + size * |t| > len($d)`
+  - adds at least the written fields to the transaction's write set
 
 #### Unboxed Scalars
 
-* `ref.i31` creates an `i31ref` from a 32 bit value, truncating high bit
-  - `ref.i31 : [i32] -> [(ref i31)]`
+* `tref.i31` creates a `ti31ref` from a 32 bit value, truncating the high bit
+  - `tref.i31 : [i32] -> [(tref none i31)]`
   - this is a *constant instruction*
+  - since creates a value, not a possibly mutable field, it is not involved in
+    read or write sets and its permission does not mean anything
 
-* `i31.get_<sx>` extracts the value, zero- or sign-extending
-  - `i31.get_<sx> : [(ref null i31)] -> [i32]`
+
+* `ti31.get_<sx>` extracts the value, zero- or sign-extending
+  - `ti31.get_<sx> : [(tref none null i31)] -> [i32]`
   - traps if the operand is null
-
-
-#### External conversion
-
-* `any.convert_extern` converts an external value into the internal representation
-  - `any.convert_extern : [(ref null1? extern)] -> [(ref null2? any)]`
-    - iff `null1? = null2?`
-  - this is a *constant instruction*
-  - note: this succeeds for all values, composing this with `extern.convert_any` (in either order) yields the original value
-
-* `extern.convert_any` converts an internal value into the external representation
-  - `extern.convert_any : [(ref null1? any)] -> [(ref null2? extern)]`
-    - iff `null1? = null2?`
-  - this is a *constant instruction*
-  - note: this succeeds for all values; moreover, composing this with `any.convert_extern` (in either order) yields the original value
+  - since this is a value, not a possibly mutable field, it is not involved in
+    read or write sets and its permission does not mean anything
 
 
 #### Casts
 
 Casts work for both abstract and concrete types. In the latter case, they test if the operand's RTT is a sub-RTT of the target type.
 
-* `ref.test <reftype>` tests whether a reference has a given type
-  - `ref.test rt : [rt'] -> [i32]`
+* `tref.test <reftype>` tests whether a reference has a given type
+  - `tref.test rt : [rt'] -> [i32]`
     - iff `rt <: rt'`
   - if `rt` contains `null`, returns 1 for null, otherwise 0
+  - since this is a value, not a possibly mutable field, it is not involved in
+    read or write sets
 
-* `ref.cast <reftype>` tries to convert a reference to a given type
-  - `ref.cast rt : [rt'] -> [rt]`
+* `tref.cast <treftype>` tries to convert a transactional reference to a given type
+  - `tref.cast rt : [rt'] -> [rt]`
     - iff `rt <: rt'`
-  - traps if reference is not of requested type
+  - traps if transactional reference is not of requested type
   - if `rt` contains `null`, a null operand is passed through, otherwise traps on null
   - equivalent to `(block $l (param trt) (result rt) (br_on_cast $l rt) (unreachable))`
+  - since this is a value, not a possibly mutable field, it is not involved in
+    read or write sets
 
-* `br_on_cast <labelidx> <reftype> <reftype>` branches if a reference has a given type
-  - `br_on_cast $l rt1 rt2 : [t0* rt1] -> [t0* rt1\rt2]`
+* `tref.cast_read <treftype>` tries to convert a tranactional reference's
+  permissions to include `read` within the current transaction
+  - `tref.cast_read : [tref perm rt] -> [tref read rt]`
+  - may add one or more fields of the referenced transactional object to the
+    transaction's read set
+  - traps if the transactional reference is null
+
+* `tref.cast_write <treftype>` tries to convert a tranactional reference's
+  permissions to include `write` within the current transaction
+  - `tref.cast_read : [tref perm rt] -> [tref read rt]`
+  - may add one or more fields of the referenced transactional object to the
+    transaction's write set
+  - traps if the transactional reference is null
+
+* `tbr_on_cast <labelidx> <treftype> <treftype>` branches if a transactional reference has a given type
+  - `tbr_on_cast $l rt1 rt2 : [t0* rt1] -> [t0* rt1\rt2]`
     - iff `$l : [t0* rt2]`
     - and `rt2 <: rt1`
   - passes operand along with branch under target type, plus possible extra args
   - if `rt2` contains `null`, branches on null, otherwise does not
+  - since this is a value, not a possibly mutable field, it is not involved in
+    read or write sets
 
-* `br_on_cast_fail <labelidx> <reftype> <reftype>` branches if a reference does not have a given type
-  - `br_on_cast_fail $l rt1 rt2 : [t0* rt1] -> [t0* rt2]`
+* `tbr_on_cast_fail <labelidx> <treftype> <treftype>` branches if a
+  transactional reference does not have a given type
+  - `tbr_on_cast_fail $l rt1 rt2 : [t0* rt1] -> [t0* rt2]`
     - iff `$l : [t0* rt1\rt2]`
     - and `rt2 <: rt1`
   - passes operand along with branch, plus possible extra args
   - if `rt2` contains `null`, does not branch on null, otherwise does
+  - since this is a value, not a possibly mutable field, it is not involved in
+    read or write sets
 
 where:
-  - `(ref null1? ht1)\(ref null ht2) = (ref ht1)`
-  - `(ref null1? ht1)\(ref ht2)      = (ref null1? ht1)`
+  - `(tref null1? ht1)\(tref null ht2) = (tref ht1)`
+  - `(tref null1? ht1)\(tref ht2)      = (tref null1? ht1)`
 
-Note: The [reference types](https://github.com/WebAssembly/reference-types) and [typed function references](https://github.com/WebAssembly/function-references)already introduce similar `ref.is_null`, `br_on_null`, and `br_on_non_null` instructions. These can now be interpreted as syntactic sugar:
+* `tref.is_null` is equivalent to `tref.test null ht`, where `ht` is the suitable bottom type (`none`, `nofunc`, or `noextern`)
 
-* `ref.is_null` is equivalent to `ref.test null ht`, where `ht` is the suitable bottom type (`none`, `nofunc`, or `noextern`)
+* `tbr_on_null` is equivalent to `tbr_on_cast null ht`, where `ht` is the suitable bottom type, except that it does not forward the null value
 
-* `br_on_null` is equivalent to `br_on_cast null ht`, where `ht` is the suitable bottom type, except that it does not forward the null value
+* `tbr_on_non_null` is equivalent to `(tbr_on_cast_fail null ht) (drop)`, where `ht` is the suitable bottom type
 
-* `br_on_non_null` is equivalent to `(br_on_cast_fail null ht) (drop)`, where `ht` is the suitable bottom type
+* finally, `tref.as_non_null` is equivalent to `tref.cast ht`, where `ht` is the heap type of the operand
 
-* finally, `ref.as_non_null` is equivalent to `ref.cast ht`, where `ht` is the heap type of the operand
-
+(EBM stopped here)
 
 #### Constant Expressions
 
