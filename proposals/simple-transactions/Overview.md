@@ -16,8 +16,7 @@ offers separate tables and memories that operate transactionally.
 * Transactional operations are visible and should have clear cost in a given
   implementation ("no hidden fees")
 
-* Range of transaction concurrency control strategies and granularities
-  possible
+* Range of transaction concurrency control strategies possible
 
 * Implementable using hardware transactional memory (with software fall back)
 
@@ -26,15 +25,19 @@ offers separate tables and memories that operate transactionally.
 * Non-goals of the simple transactions proposal:
   - Support for closed nested transactions (beyond "flat" nesting)
   - Support for open nested transactions or other advanced transaction semantics
+  - Fine-grained concurrency control on objects in the transacitonal heap
+    (whole objects only)
 
 ### Requirements
 
 * Separates transactional data and types from non-transactional data and types
-  - Prevents attempts to mix transactional and non-transactional concurrent
-    access to same data, which would lead to a semantic mess
+  - Prevents attempts to mix transactional and non-transactional use of the
+    same data, which would lead to a semantic mess
 * Transactional data and types analogous to non-transactional ones
   - No needless variation
-* Simple parsing, etc., by adding new type names and opcodes
+* Simple parsing, etc., by adding new type names and opcodes (does some
+  overloading of existing opcodes; could do more if that is judged more
+  desirable)
 * Interoperability with threads proposal
 * Interoperability with exceptions proposal
 
@@ -52,12 +55,12 @@ offers separate tables and memories that operate transactionally.
   executing a *transactional block*
 * Explicit notion of status of an object within a transaction (readable, writable)
 * Transaction conflicts expressed in terms of read and write sets, allowing
-  implementation choice of granularity
+  implementation choice of granularity (on transactional tables and memories)
 * Adds transactional tables, memories, and globals so that all kinds of
   storage may be accessed transactionally
 * Allows non-transactional data to be accessed within transactions (may wish
   to reconsider this decision, but it does provide a possibly useful "escape
-  hatch")
+  hatch"); no concurrency control or rollback apply to those data
 
 
 ### Types
@@ -69,18 +72,19 @@ Transactional types "clone" the existing reference types.
 * Closed nested transactions
 * Open nested transactions and semantic hooks for further extended semantics
 * Transactions over persistent data
-* Explicit log of application chosen data describing what eacg transaction "did"
+* Explicit log of application-chosen data describing what each successful
+  transaction "did"
 
 ### Efficiency Considerations
 
 Maintain Wasm's efficiency properties as much as possible, namely:
 
 * all operations are reliably cheap, ideally constant time
-* field accesses are single-indirection loads and stores (but possibly with
-  read or write set maintenance)
+* field accesses are single-indirection loads and stores
 * allocation remains fast
-* no implicit allocation on the heap (e.g. boxing)
-* primitive values should not need to be boxed to be stored in managed data structures
+* no implicit allocation on the heap (e.g., boxing)
+* primitive values should not need to be boxed to be stored in transactional
+  data structures
 * unboxed scalars are interchangeable with references
 * allows ahead-of-time compilation and code caching
 
@@ -88,7 +92,7 @@ Maintain Wasm's efficiency properties as much as possible, namely:
 ### Evaluation
 
 Existing languages do not generally support transactions directly, so this
-remains an are for development.
+remains an area for development.
 
 (EBM)
 
