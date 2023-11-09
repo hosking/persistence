@@ -1,82 +1,84 @@
-# GC Extension
+# Simple Transactions Extension
 
 ## Introduction
 
-Note: Basic support for simple [reference types](https://github.com/WebAssembly/reference-types/blob/master/proposals/reference-types/Overview.md), for [typed function references proposal](https://github.com/WebAssembly/function-references/blob/master/proposals/function-references/Overview.md), and for [type imports](https://github.com/WebAssembly/proposal-type-imports/blob/master/proposals/type-imports/Overview.md) have been carved out into separate proposals which should become the future basis for this proposal.
-
-See [MVP](MVP.md) for a concrete v1 proposal and [Post-MVP](Post-MVP.md) for possible future features.
-
-WARNING: Some contents of this document may have gotten out of sync with the [MVP](MVP.md) design, which is more up-to-date.
-
+This proposal builds on the [GC}(https://github.com/WebAssembly/gc) proposal
+adding a separate garbage collected heap that works transactionally.  It also
+offers separate tables and memories that operate transactionally.
 
 ### Motivation
 
-* Efficient support for high-level languages
-  - faster execution
-  - smaller modules
-  - the vast majority of modern languages need it
+* Nice semantics when executing with multiple threads
 
-* Provide access to industrial-strength GCs
-  - at least on the web, VMs already have high performance GCs
+* Encourage innovation and implementation of transactions in languages that
+  target WebAssembly
 
-* Non-goal: seamless interoperability between multiple languages
+* Transactional operations are visible and should have clear cost in a given
+  implementation ("no hidden fees")
 
+* Range of transaction concurrency control strategies and granularities
+  possible
+
+* Implementable using hardware transactional memory (with software fall back)
+
+* Good basis for clean durable transactions over persistent data
+
+* Non-goals of the simple transactions proposal:
+  - Support for closed nested transactions (beyond "flat" nesting)
+  - Support for open nested transactions or other advanced transaction semantics
 
 ### Requirements
 
-* Allocation of data structures that are garbage collected
-* Allocation of byte arrays that are garbage collected
-* Allow heap values from the embedder (e.g. JavaScript objects) that are garbage collected
-* Unboxing of small scalar values
-* Down casts as an escape hatch for the low-level type system
-* Explicit low-level control over all runtime behaviour (no implicit allocation, no implicit runtime types)
-* Modular (no need for shared type definitions etc.)
-
+* Separates transactional data and types from non-transactional data and types
+  - Prevents attempts to mix transactional and non-transactional concurrent
+    access to same data, which would lead to a semantic mess
+* Transactional data and types analogous to non-transactional ones
+  - No needless variation
+* Simple parsing, etc., by adding new type names and opcodes
+* Interoperability with threads proposal
+* Interoperability with exceptions proposal
 
 ### Challenges
 
-* Fast but type-safe
-* Lean but sufficiently universal
+* Support range of implementation strategies
+* Clean semantics
 * Language-independent
-* Trade-off triangle between simplicity, expressiveness and performance
-* Interaction with threads
-
 
 ### Approach
 
-* Independent from linear memory
-* Low-level *data representation types*, not high-level language types or object model
-* Basic but general structure: tuples (structs), arrays, unboxed scalars
-* Accept minimal amount of dynamic overhead (checked casts) as price for simplicity/universality
-* Pay as you go; in particular, no effect on code not using GC, no runtime type information unless requested
-* Don't introduce dependencies on GC for other features (e.g., using resources through tables)
-* Make runtime type information explicit
-* Extend the design iteratively, ship a minimal set of functionality fast
+* "Clones" existing storage, types, and opcodes
+* "Flat" nesting
+* Transactions formed either by calling a *transactional function* or
+  executing a *transactional block*
+* Explicit notion of status of an object within a transaction (readable, writable)
+* Transaction conflicts expressed in terms of read and write sets, allowing
+  implementation choice of granularity
+* Adds transactional tables, memories, and globals so that all kinds of
+  storage may be accessed transactionally
+* Allows non-transactional data to be accessed within transactions (may wish
+  to reconsider this decision, but it does provide a possibly useful "escape
+  hatch")
 
 
 ### Types
 
-The sole purpose of the Wasm type system is to describe low-level data layout, in order to aid the engine compiling its access efficiently. It is *not* designed or intended to catch errors in a producer or reflect richer semantic behaviours of a source language's type system, such as distinguishing the types of data structures that have the same layout but are intended to be distinguished in the source language (e.g., different classes).
-
-This is true for the types in this proposal as well. The introduction of managed data adds new forms of types that describe the layout of memory blocks on the heap, so that the engine knows, for example, the type of a struct being accessed, avoiding any runtime check or dispatch. Likewise, it knows the result type of this access, such that consecutive uses of the result are equally check-free. For that purpose, the type system does little more than describing the *shape* of such data.
-
+Transactional types "clone" the existing reference types.
 
 ### Potential Extensions
 
-* Safe interaction with threads (sharing, atomic access)
-* Forming unions of different types, as value types?
-* Direct support for strings?
-* Defining, allocating, and indexing structures as extensions to imported types?
-
+* Closed nested transactions
+* Open nested transactions and semantic hooks for further extended semantics
+* Transactions over persistent data
+* Explicit log of application chosen data describing what eacg transaction "did"
 
 ### Efficiency Considerations
 
-GC support should maintain Wasm's efficiency properties as much as possible, namely:
+Maintain Wasm's efficiency properties as much as possible, namely:
 
 * all operations are reliably cheap, ideally constant time
-* structures are contiguous, dense chunks of memory
-* field accesses are single-indirection loads and stores
-* allocation is fast
+* field accesses are single-indirection loads and stores (but possibly with
+  read or write set maintenance)
+* allocation remains fast
 * no implicit allocation on the heap (e.g. boxing)
 * primitive values should not need to be boxed to be stored in managed data structures
 * unboxed scalars are interchangeable with references
@@ -85,12 +87,10 @@ GC support should maintain Wasm's efficiency properties as much as possible, nam
 
 ### Evaluation
 
-Example languages from three categories should be successfully implemented:
+Existing languages do not generally support transactions directly, so this
+remains an are for development.
 
-* an object-oriented language with nominal subtyping (e.g., a subset of Java, with classes, inheritance, interfaces)
-* a typed functional language (e.g., a subset of ML, with closures, polymorphism, variant types)
-* an untyped language (e.g., a subset of Scheme or Python or something else)
-
+(EBM)
 
 ## Use Cases
 

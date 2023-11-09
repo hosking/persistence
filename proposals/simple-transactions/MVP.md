@@ -12,10 +12,15 @@ In particular, this MVP proposal does not include nested transaction support
 (closed or open) but only "flat" nesting.  It is, however, anticipated that a
 further extension supporting persistence (durability of transactional state)
 will build on this proposal in a relatively straightforward way.
+
 A number of possible extensions are discussed in the [Post-MVP](Post-MVP.md) document.
 Except for persistence, they are not necessarily considered essential for
-transaction suppoty to be "complete", hence the name "simple transactions" for
+transaction support to be "complete", hence the name "simple transactions" for
 this proposal.
+
+Arguably, this proposal could be simple still if it left out `ttable`/`telem`
+or `tmemory`/`tdata` or both.  We included them because they do not really
+complicate matters much, only add more "stuff".
 
 ## Language
 
@@ -306,7 +311,8 @@ allow implementations that validate read sets before committing, rather than
 requiring read locks.  The intent is also to allow timestamp based concurrency
 control.  It is also the intent of the spec to allow conflict avoidance or
 conflict detection.  A formalisation will simply guarantee that successful
-transactions not involve a cycle of dependence on values read and written.
+transactions not involve a cycle of dependence on mutable items read and
+written.
 
 Transactional tail calls are considered part of the original transaction.
 
@@ -333,6 +339,7 @@ successfully exiting ` tblock` or returning from a `tfunc`.
 
 * `tref.eq` compares two references whose types support equality
   - `tref.eq : [teqref teqref] -> [i32]`
+  - has no impact on read or write sets since the references are simply values
 
 
 #### Structures
@@ -342,22 +349,25 @@ successfully exiting ` tblock` or returning from a `tfunc`.
     - iff `expand($t) = tstruct (mut t'')*`
     - and `(t' = unpacked(t''))*`
   - this is a *constant instruction*
-  - adds all fields of the new `tstruct` to the transaction's write set
+  - adds the new `tstruct` to the transaction's write set
 
 * `tstruct.new_default <typeidx>` allocates a structure of type `$t` with canonical [RTT](#values) and initialises its fields with default values
   - `tstruct.new_default $t : [] -> [(tref write $t)]`
     - iff `expand($t) = tstruct (mut t')*`
     - and all `t'*` are defaultable
   - this is a *constant instruction*
-  - adds all fields of the new `tstruct` to the transaction's write set
+  - adds the new `tstruct` to the transaction's write set
 
 * `tstruct.get_<sx>? <typeidx> <fieldidx>` reads field `i` from a structure
   - `tstruct.get_<sx>? $t i : [(tref read null $t)] -> [t]`
-    - iff `expand($t) = tstruct (mut1 t1)^i (mut ti) (mut2 t2)*`
+    - iff `expand($t) = tstruct (mut1 t1)^i (var ti) (mut2 t2)*`
+    - and `t = unpacked(ti)`
+    - and `_<sx>` present iff `t =/= ti`
+  - `tstruct.get_<sx>? $t i : [(tref none null $t)] -> [t]`
+    - iff `expand($t) = tstruct (mut1 t1)^i (const ti) (mut2 t2)*`
     - and `t = unpacked(ti)`
     - and `_<sx>` present iff `t =/= ti`
   - traps on `null`
-  - adds at least the accessed field to the transaction's read set
 
 * `tstruct.set <typeidx> <fieldidx>` writes field `i` of a structure
   - `tstruct.set $t i : [(tref write null $t) ti] -> []`
@@ -374,21 +384,21 @@ successfully exiting ` tblock` or returning from a `tfunc`.
     - iff `expand($t) = tarray (mut t'')`
     - and `t' = unpacked(t'')`
   - this is a *constant instruction*
-  - adds all fields of the new `tarray` to the transaction's write set
+  - adds the new `tarray` to the transaction's write set
 
 * `tarray.new_default <typeidx>` allocates an array with canonical [RTT](#values) and initialises its fields with the default value
   - `tarray.new_default $t : [i32] -> [(tref write $t)]`
     - iff `expand($t) = tarray (mut t')`
     - and `t'` is defaultable
   - this is a *constant instruction*
-  - adds all fields of the new `tarray` to the transaction's write set
+  - adds the new `tarray` to the transaction's write set
 
 * `array.new_fixed <typeidx> <N>` allocates an array with canonical [RTT](#values) of fixed size and initialises it from operands
   - `tarray.new_fixed $t N : [t^N] -> [(tref write $t)]`
     - iff `expand($t) = tarray (mut t'')`
     - and `t' = unpacked(t'')`
   - this is a *constant instruction*
-  - adds all fields of the new `tarray` to the transaction's write set
+  - adds the new `tarray` to the transaction's write set
 
 * `tarray.new_data <typeidx> <dataidx>` allocates an array with canonical [RTT](#values) and initialises it from a data segment
   - `tarray.new_data $t $d : [i32 i32] -> [(tref write $t)]`
@@ -399,7 +409,9 @@ successfully exiting ` tblock` or returning from a `tfunc`.
   - the 2nd operand is the `size` of the array
   - traps if `offset + |t'|*size > len($d)`
   - note: for now, this is _not_ a constant instruction, in order to side-step issues of recursion between binary sections; this restriction will be lifted later
-  - adds all fields of the new `tarray` to the transaction's write set
+  - adds the new `tarray` to the transaction's write set
+  - if `<dataidx>` indicates a `tdata` segment, adds at least the `tdata`
+    indices read to the transaction's read set
 
 * `tarray.new_elem <typeidx> <elemidx>` allocates an array with canonical [RTT](#values) and initialises it from an element segment
   - `tarray.new_elem $t $e : [i32 i32] -> [(tref write $t)]`
@@ -410,15 +422,20 @@ successfully exiting ` tblock` or returning from a `tfunc`.
   - the 2nd operand is the `size` of the array
   - traps if `offset + size > len($e)`
   - note: for now, this is _not_ a constant instruction, in order to side-step issues of recursion between binary sections; this restriction will be lifted later
-  - adds all fields of the new `tarray` to the transaction's write set
+  - adds the new `tarray` to the transaction's write set
+  - if `<elemidx>` indicates a `telem` item, adds at least the `telem` index
+    read to the transaction's read set
 
 * `tarray.get_<sx>? <typeidx>` reads an element from an array
   - `tarray.get_<sx>? $t : [(tref read null $t) i32] -> [t]`
-    - iff `expand($t) = tarray (mut t')`
+    - iff `expand($t) = tarray (var t')`
+    - and `t = unpacked(t')`
+    - and `_<sx>` present iff `t =/= t'`
+  - `tarray.get_<sx>? $t : [(tref none null $t) i32] -> [t]`
+    - iff `expand($t) = tarray (const t')`
     - and `t = unpacked(t')`
     - and `_<sx>` present iff `t =/= t'`
   - traps on `null` or if the dynamic index is out of bounds
-  - adds at least the accessed field to the transaction's read set
 
 * `tarray.set <typeidx>` writes an element to an array
   - `tarray.set $t : [(tref write null $t) i32 t] -> []`
@@ -428,7 +445,7 @@ successfully exiting ` tblock` or returning from a `tfunc`.
   - adds at least the accessed field to the transaction's write set
 
 * `tarray.len` inquires the length of an array
-  - `tarray.len : [(tref read null array)] -> [i32]`
+  - `tarray.len : [(tref none null array)] -> [i32]`
   - traps on `null`
   - Note: since the length of a given `tarray` never changes (i.e., it is a
     constant), it is never part of the read or write set of a transaction.
@@ -442,22 +459,20 @@ successfully exiting ` tblock` or returning from a `tfunc`.
   - the 3rd operand is the `value` with which to fill
   - the 4th operand is the `size` of the filled slice
   - traps if `array` is null or `offset + size > len(array)`
-  - adds at least the written fields to the transaction's write set
+  - TODO: Shouldn't this require the array to have `var` fields?
 
 * `tarray.copy <typeidx> <typeidx>` copies a sequence of elements between two arrays
   - `tarray.copy $t1 $t2 : [(tref write null $t1) i32 (ref null $t2) i32 i32] -> []`
     - defined similarly to `array.copy` with a transactional target and
       non-transactional source
-    - adds at least the written fields to the transaction's write set
   - `tarray.copyt $t1 $t2 : [(tref write null $t1) i32 (tref read null $t2) i32 i32] -> []`
+    - iff `expand($t2) = tarray (var t')`
     - defined similarly to `array.copy` with a transactional target and
       transactional source
-    - adds at least the written fields to the transaction's write set
-    - adds at least the read fields to the transaction's read set
-  - `array.copyt $t1 $t2 : [(ref null $t1) i32 (tref read null $t2) i32 i32] -> []`
+  - `array.copyt $t1 $t2 : [(ref null $t1) i32 (tref none null $t2) i32 i32] -> []`
+    - iff `expand($t2) = tarray (const t')`
     - defined similarly to `array.copy` with a non-transactional target and
       transactional source
-    - adds at least the read fields to the transaction's read set
 
 * `tarray.init_elem <typeidx> <elemidx>` copies a sequence of elements from an element segment to a `tarray`
   - `tarray.init_elem $t $e : [(tref write null $t) i32 i32 i32] -> []`
@@ -470,7 +485,8 @@ successfully exiting ` tblock` or returning from a `tfunc`.
   - the 4th operand is the `size` of the copy
   - traps if `array` is null
   - traps if `dest_offset + size > len(array)` or `src_offset + size > len($e)`
-  - adds at least the written fields to the transaction's write set
+  - if `<elemidx>` indicates a `telem` item, adds at least the `telem` index
+    read to the transaction's read set
 
 * `tarray.init_data <typeidx> <dataidx>` copies a sequence of values from a data segment to an array
   - `tarray.init_data $t $d : [(tref write null $t) i32 i32 i32] -> []`
@@ -485,7 +501,8 @@ successfully exiting ` tblock` or returning from a `tfunc`.
     type, the source is interpreted as packed in the same way.
   - traps if `array` is null
   - traps if `dest_offset + size > len(array)` or `src_offset + size * |t| > len($d)`
-  - adds at least the written fields to the transaction's write set
+  - if `<dataidx>` indicates a `tdata` item, adds at least the `tdata` indices
+    read to the transaction's read set
 
 #### Unboxed Scalars
 
@@ -509,7 +526,7 @@ Casts work for both abstract and concrete types. In the latter case, they test i
 
 * `tref.test <reftype>` tests whether a reference has a given type
   - `tref.test rt : [rt'] -> [i32]`
-    - iff `rt <: rt'`
+    - iff `rt <: rt'`, ignoring permissions
   - if `rt` contains `null`, returns 1 for null, otherwise 0
   - since this is a value, not a possibly mutable field, it is not involved in
     read or write sets
@@ -522,19 +539,19 @@ Casts work for both abstract and concrete types. In the latter case, they test i
   - equivalent to `(block $l (param trt) (result rt) (br_on_cast $l rt) (unreachable))`
   - since this is a value, not a possibly mutable field, it is not involved in
     read or write sets
+  - permission on `rt` and `rt'` must be the same (see `tref.cast_read` and
+    `tref.cast_write`)
 
 * `tref.cast_read <treftype>` tries to convert a tranactional reference's
   permissions to include `read` within the current transaction
   - `tref.cast_read : [tref none null rt] -> [tref read rt]`
-  - may add one or more fields of the referenced transactional object to the
-    transaction's read set
+  - adds the referenced transactional object to the transaction's read set
   - traps if the transactional reference is null [OR: does not complain?]
 
 * `tref.cast_write <treftype>` tries to convert a tranactional reference's
   permissions to include `write` within the current transaction
   - `tref.cast_write : [tref none null rt] -> [tref write rt]`
-  - may add one or more fields of the referenced transactional object to the
-    transaction's write set
+  - adds the referenced transactional object to the transaction's write set
   - traps if the transactional reference is null [OR: does not complain?]
 
 * `tbr_on_cast <labelidx> <treftype> <treftype>` branches if a transactional reference has a given type
@@ -543,6 +560,7 @@ Casts work for both abstract and concrete types. In the latter case, they test i
     - and `rt2 <: rt1`
   - passes operand along with branch under target type, plus possible extra args
   - if `rt2` contains `null`, branches on null, otherwise does not
+  - permissions on `rt1` and `rt2` must be the same
   - since this is a value, not a possibly mutable field, it is not involved in
     read or write sets
 
@@ -553,6 +571,7 @@ Casts work for both abstract and concrete types. In the latter case, they test i
     - and `rt2 <: rt1`
   - passes operand along with branch, plus possible extra args
   - if `rt2` contains `null`, does not branch on null, otherwise does
+  - `rt1` and `rt2` must have the same permissions
   - since this is a value, not a possibly mutable field, it is not involved in
     read or write sets
 
@@ -571,9 +590,9 @@ where:
 #### Globals
 
 To modules are added `tglobal` variable definitions, analogous to `global`
-variables.  Note that a `const` `tglobal` is equivalent to the `const`
+variables.  Note that a `const` `tglobal` is equivalent to a `const`
 `global` since it cannot be changed after initialisation, transactionally or
-not.
+otherwise.
 
 * `tglobal.get <gidx>` gets the value of a transactional global variable
   - `tglobal.get <gidx> : [] -> [$t]` where `$t` is the type of the variable
@@ -581,7 +600,7 @@ not.
 
 * `tglobal.set <gidx>` sets the value of a transactional global variable
   - `tglobal.set <gidx> : [$t] -> []` where `$t` is the type of the variable
-  - lgeal only of the variable is mutable
+  - legal only of the variable is mutable
   - adds the variable to the transaction's write set
 
 #### Tables
@@ -589,83 +608,117 @@ not.
 To modules are added `ttable` and `telem` definitions, analogous to `table`
 and `elem` definitions.  A `ttable` will contain `tref` values.  The
 instructions behave analogously to their non-transactional versions.  The read
-and write set effects are listed with each instruction.
+and write set effects are listed with each instruction.  They are described in
+terms of the `ttable` index values.  The terminology "at least" is intended to
+allow an implementation to use a granularity larger than a single for purposes
+of determining transaction conflicts.
 
 * `ttable.get <tidx>`
-  - At least the fetched index is added to the transaction's read set.
+  - At least the fetched `ttable` index is added to the transaction's read set.
 
 * `ttable.set <tidx>`
-  - At least the modified index is added to the transaction's write set.
+  - At least the modified `ttable` index is added to the transaction's write set.
 
 * `ttable.size <tidx>`
   - The size of the `ttable` is added to the transaction's read set.
 
 * `ttable.grow <tidx>`
-  - At least the newly added indices are added to the transaction's write set.
+  - At least the newly added `ttable` indices are added to the transaction's write set.
   - The size of the `ttable` is added to the transaction's write set.
 
 * `ttable.fill <tidx>`
-  - At least the modified indices are added to the transaction's write set.
+  - At least the modified `ttable` indices are added to the transaction's write set.
 
-* `ttable.copy <tidx1> <tidx2>`
-  - At least the fetched indices are added to the transaction's read set.
-  - At least the modified indices are added to the transaction's write set.
+* `ttable.copyt <tidx1> <tidx2>`
+  - At least the fetched `ttable` indices are added to the transaction's read set.
+  - At least the modified `ttable` indices are added to the transaction's write set.
+  - Copie from a `ttable` to another `ttable`.
+
+* `ttable.copy <tidx1> <idx2>`
+  - At least the modified `ttable` indices are added to the transaction's write set.
+  - Copies from a `table` to a `ttable`.
+
+* `table.copyt <idx1> <tidx2>`
+  - At least the fetched `ttable` indices are added to the transaction's read set.
+  - Copies from a `ttable` to a `table`.
 
 * `ttable.init <tidx> <elemidx>`
-  - At least the indicated element index is added to the transaction's read set.
-  - At least the modified indices are added to the transaction's write set.
+  - At least the modified `ttable` indices are added to the transaction's write set.
+  - If `<elemidx>` indicates a `telem`, adds at least the indicated `telem`
+    index to the transaction's read set.
 
-* `telem.drop <elemidx>`
-  - At least the indicated element index is added to the transaction's write set.
+* `table.init <idx> <telemidx>`
+  - If `<elemidx>` indicates a `telem`, adds at least the indicated `telem`
+    index to the transaction's read set.
+
+* `elem.drop <elemidx>`
+  - If `<elemidx>` indicates a `telem`, adds at least the dropped `telem`
+    index to the transaction's write set.
 
 #### Memories
 
 To modules are added `tmemory` and `tdata` definitions, analogous to `memory`
 and `data` definitions.  The instructions behave analogously to their
 non-transactional versions.  The read and write set effects are described
-below.
+below, in terms of addresses (indicies) in each `tmemory`.  The load and
+store instructions use the same opcodes as the non-transactional versions
+since they can be discriminated statically.
 
 * Memory `load` instructions
-  - Adds at least the accessed address range to the transaction's read set.
+  - Adds at least the accessed `tmemory` address range to the transaction's read set.
 
 * Memory `store` instructions
-  - Adds at least the updated address range to the transaction's write set.
+  - Adds at least the updated `tmemory` address range to the transaction's write set.
 
 * `tmemory.size`
   - The size of the `tmemory` is added to the transaction's read set.
 
 * `tmemory.grow`
-  - At least the newly added addresses are added to the transaction's write set.
+  - At least the newly added `tmemory` addresses are added to the transaction's write set.
   - The size of the `tmemory` is added to the transaction's write set.
 
 * `tmemory.fill`
-  - At least the modified addresses are added to the transaction's write set.
+  - At least the modified `tmemory` addresses are added to the transaction's write set.
 
-* `tmemory.copy <tidx1> <tidx2>`
-  - At least the transactionally fetched addresses are added to the transaction's read set.
-  - At least the transactionally written addresses are added to the transaction's write set.
+* `tmemory.copyt <tidx1> <tidx2>`
+  - At least the transactionally fetched `tmemory` addresses are added to the transaction's read set.
+  - At least the transactionally written `tmemory` addresses are added to the transaction's write set.
 
-* `tmemory.init`
-  - At least the initialised addresses are added to the transaction's write set.
-  - At least the accessed data index is added to the transaction's read set.
+* `tmemory.copy <tidx1> <idx2>`
+  - At least the transactionally written `tmemory` addresses are added to the transaction's write set.
 
-* `tdata.drop`
-  - At least the indicated data index is added to the transaction's write set.
+* `memory.copyt <idx1> <tidx2>`
+  - At least the transactionally fetched `tmemory` addresses are added to the transaction's read set.
+
+* `tmemory.init <dataidx>`
+  - At least the initialised `tmemory` addresses are added to the transaction's write set.
+  - If `<dataidx>` indicates a `tdata`, adds at least the accessed `tdata`
+    index to the transaction's read set.
+
+* `memory.init <dataidx>`
+  - If `<dataidx>` indicates a `tdata`, adds at least the accessed `tdata`
+    index to the transaction's read set.
+
+* `data.drop <dataidx>`
+  - If `<dataidx>` indicates a `tdata`, adds at least the dropped `tdata`
+    index to the transaction's write set.
 
 #### Control Instructions
 
 A new transactional block instruction is added, as well as an instruction to
 caue a transaction to fail explicitly.
 
-* *instr* ::= ... | `tblock` *blocktype* *instr1\** `failure` *instr2\** `end`
+* *instr* ::= ... | `tblock` *blocktype* *instr1\** `else` *instr2\** `end`
   - Analogous to `block` this executes *instr1\** transactionally.  On
     failure, if the `tblock` is not itself executed within a transaction, the
-    `failure` instructions `*instr2\**` are executed after effects of the
+    `else` instructions *instr2\** are executed after effects of the
     transaction have been undone.  Thus they are not executed "in" the
     transaction.
   - The failure instructions are started with no values given on the stack,
     but must produce a result that matches the *blocktype* result (or branch
     to some outer control structure).
+  - Since it is easy to nest a call within a `tblock`, transactional forms of
+    function call are not provided.
 
 * *instr* ::= ... | `tfail`
   - Causes the current transaction to fail.  **TODO:** consider whether to
@@ -795,11 +848,28 @@ The opcode for heap types is encoded as an `s33`.
 | 0xfc19 | `tbr_on_cast_fail $l (tref null1? ht1) (tref null2? ht2)` | `flags : u8`, `$l : labelidx`, `ht1 : theaptype`, `ht2 : theaptype` |
 | 0xfc1a | `tref.cast_read (tref none null ht)` | `ht : theaptype` |
 | 0xfc1a | `tref.cast_write (tref none null ht)` | `ht : theaptype` |
-| 0xfc1c | `tref.i31` |
-| 0xfc1d | `ti31.get_s` |
-| 0xfc1e | `ti31.get_u` |
-| 0xfc20 | `tarray.copyt $t1 $t2`
-| 0xfc21 | `array.copyt $t1 $t2`
+| 0xfc1c | `tref.i31` |  |
+| 0xfc1d | `ti31.get_s` |  |
+| 0xfc1e | `ti31.get_u` |  |
+| 0xfc20 | `tarray.copyt $t1 $t2` |  |
+| 0xfc21 | `array.copyt $t1 $t2` |  |
+| 0xfc30 | `ttable.get (tref none null ht)` | `ht : theaptype` |
+| 0xfc31 | `ttable.set (tref none null ht)` | `ht : theaptype` |
+| 0xfc32 | `ttable.size (tref none null ht)` | `ht : theaptype` |
+| 0xfc33 | `ttable.grow (tref none null ht)` | `ht : theaptype` |
+| 0xfc34 | `ttable.fill (tref none null ht)` | `ht : theaptype` |
+| 0xfc35 | `ttable.copyt (tref none null ht)` | `ht : theaptype` |
+| 0xfc36 | `ttable.copy (tref none null ht)` | `ht : theaptype` |
+| 0xfc37 | `ttable.init (tref none null ht)` | `ht : theaptype` |
+| 0xfc40 | `tmemory.size` |  |
+| 0xfc41 | `tmemory.grow` |  |
+| 0xfc42 | `tmemory.fill` |  |
+| 0xfc43 | `tmemory.copy` |  |
+| 0xfc44 | `tmemory.copyt` |  |
+| 0xfc45 | `memory.copyt` |  |
+| 0xfc46 | `tmemory.init` |  |
+| 0xfc50 | `tblock` |  |
+| 0xfc51 | `tfail`  |  |
 
 Flag byte encoding for `tbr_on_cast(_fail)?`:
 
