@@ -54,9 +54,13 @@ non-transactional data separate.  The intent is that transactional data be
 manipulated only transactionally (within and by transactions).  Thus the
 extension offers a transactional heap distinct from the existing
 non-transactional heap.  For reasons of both clear semantics and better
-performance, the distinc heaps use distinct types.  The extension also uses
+performance, the distinct heaps use distinct types.  The extension also uses
 distinct transactional and non-transactional memories, which have distinct
-memory types.
+memory types.  However, transactional and non-transactional data may refer to
+each other.  Thus their heaps form a single graph for garbage collection.  GC
+must respect the fact that a transaction might either succeed or fail.  In
+particular, it cannot reclaim an object made unreachable by actions of a
+running transaction.
 
 The transactional heap types form a separate hierarchy analogous to the
 existing hierarchy:
@@ -282,6 +286,12 @@ Note: Instructions not mentioned here remain the same.  Also, the instructions
 defined here could overload the corresponding non-transactional instructions
 since transactional and non-transactional types are distinct.  We preferred
 not to require a further case analysis on types when executing these instructions.
+
+Certain instructions may be executed only within the body of a transactional
+block (`tblock`) or tranactional function (`tfunc`).  They are: instructions
+that may add to the read or write set of a transaction, i.e., that access
+mutable data during a transaction, and `tfail` (which causes a transaction to
+fail).
 
 #### Transactions and Conflict Detection
 
